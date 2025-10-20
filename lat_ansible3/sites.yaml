@@ -1,0 +1,39 @@
+# Play for Web Server
+- hosts: web
+  become: yes
+  vars:
+    nama: Saiful Habib
+    kelas: XII TJKT 0
+  tasks:
+    - name: Install nginx
+      apt:
+        name:
+          - nginx
+        state: present
+        update_cache: yes
+
+    - name: Ensure services are running
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Deploy HTML test page
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Tes HTML Tahap 1</title>
+          </head>
+          <body>
+              <h1>Tes HTML Tahap 1</h1>
+              <p>Nama: {{ nama }}</p>
+              <p>Kelas: {{ kelas }}</p>
+              <p>Silahkan di Screenshot!</p>
+          </body>
+          </html>
+        dest: /var/www/html/test.html
+        owner: www-data
+        group: www-data
+        mode: "0644"

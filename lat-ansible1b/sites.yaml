@@ -1,0 +1,285 @@
+# Play for Database Server (simple but with password auth)
+- hosts: db
+  become: yes
+  vars:
+    pg_user: postgres
+    pg_pass: postgres123 # admin password for postgres user
+    app_db: myappdb
+    app_user: phpuser
+    app_pass: php123
+  tasks:
+    - name: Install PostgreSQL server and contrib
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+          - python3-psycopg2
+        state: present
+        update_cache: yes
+
+    - name: Ensure PostgreSQL is running
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Find PostgreSQL configuration directory
+      find:
+        paths: /etc/postgresql
+        patterns: "postgresql.conf"
+        file_type: file
+        recurse: yes
+      register: postgresql_conf_files
+
+    - name: Configure PostgreSQL to listen on all interfaces
+      lineinfile:
+        path: "{{ postgresql_conf_files.files[0].path }}"
+        regexp: '^#?listen_addresses\s*='
+        line: "listen_addresses = '*'"
+        backup: yes
+
+    - name: Find PostgreSQL HBA configuration file
+      find:
+        paths: /etc/postgresql
+        patterns: "pg_hba.conf"
+        file_type: file
+        recurse: yes
+      register: pg_hba_files
+
+    - name: Configure client authentication (require password with md5)
+      lineinfile:
+        path: "{{ pg_hba_files.files[0].path }}"
+        line: "host all all 0.0.0.0/0 md5"
+        insertafter: "# IPv4 local connections:"
+        backup: yes
+
+    - name: Restart PostgreSQL service
+      service:
+        name: postgresql
+        state: restarted
+
+    - name: Ensure ACL tools are installed (fix permission sharing for become_user)
+      apt:
+        name: acl
+        state: present
+        update_cache: yes
+      become: yes
+
+    - name: Set postgres password
+      become: true
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        name: "{{ pg_user }}"
+        password: "{{ pg_pass }}"
+
+    - name: Create database
+      community.postgresql.postgresql_db:
+        name: "{{ app_db }}"
+        state: present
+        login_host: "127.0.0.1"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_pass }}"
+
+    - name: Create DB user
+      community.postgresql.postgresql_user:
+        name: "{{ app_user }}"
+        password: "{{ app_pass }}"
+        role_attr_flags: "LOGIN"
+        state: present
+        login_host: "127.0.0.1"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_pass }}"
+
+    - name: Grant privileges to user
+      community.postgresql.postgresql_privs:
+        db: "{{ app_db }}"
+        role: "{{ app_user }}"
+        privs: "ALL"
+        type: "table"
+        objs: ALL_IN_SCHEMA # grant on all tables in schema
+        login_host: "*"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_pass }}"
+
+    - name: Create table `users` if not exists
+      community.postgresql.postgresql_query:
+        login_host: "127.0.0.1"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_pass }}"
+        db: "{{ app_db }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR(100) NOT NULL UNIQUE,
+            first_name VARCHAR(50) NOT NULL
+          );
+
+    - name: Insert sample users
+      community.postgresql.postgresql_query:
+        login_host: "127.0.0.1"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_pass }}"
+        db: "{{ app_db }}"
+        query: |
+          INSERT INTO users (email, first_name)
+          VALUES
+            ('jd@mail.com', 'John'),
+            ('alice@mail.com', 'Alice'),
+            ('bob@mail.com', 'Bob')
+          ON CONFLICT (email) DO UPDATE SET first_name = EXCLUDED.first_name;
+
+# Play for Web Server
+- hosts: web
+  become: yes
+  vars:
+    php_version: "8.4"
+    db_host: "10.10.30.2"
+    db_name: "myappdb"
+    db_user: "phpuser"
+    db_password: "php123"
+  tasks:
+    - name: Install nginx, PHP, PHP-FPM and PHP PostgreSQL extension
+      apt:
+        name:
+          - nginx
+          - php-fpm
+          - php-pgsql
+        state: present
+        update_cache: yes
+
+    - name: Ensure services are running
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Ensure PHP-FPM service is running
+      service:
+        name: "php{{ php_version }}-fpm"
+        state: started
+        enabled: yes
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Deploy Nginx config for PHP site
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name _;
+
+              root /var/www/phpapp;
+              index index.php index.html;
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+
+              location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/run/php/php{{ php_version }}-fpm.sock;
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                  include fastcgi_params;
+              }
+          }
+        dest: /etc/nginx/sites-available/phpapp
+      notify: Reload nginx
+
+    - name: Enable PHP site
+      file:
+        src: /etc/nginx/sites-available/phpapp
+        dest: /etc/nginx/sites-enabled/phpapp
+        state: link
+        force: yes
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Create web root directory
+      file:
+        path: /var/www/phpapp
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: Deploy HTML test page
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Tes HTML Tahap 1</title>
+          </head>
+          <body>
+              <h1>Tes HTML Tahap 1</h1>
+              <p>Nama: [Nama Kalian Disini]</p>
+              <p>Kelas: [Kelas Kalian Disini]</p>
+              <p>Silahkan di Screenshot!</p>
+          </body>
+          </html>
+        dest: /var/www/phpapp/htmltest.html
+        owner: www-data
+        group: www-data
+        mode: "0644"
+
+    - name: Deploy test PHP script
+      copy:
+        content: |
+          <?php
+          // Enable strict error reporting for development (disable in production)
+          error_reporting(E_ALL);
+          ini_set('display_errors', '1');
+
+          try {
+              // Create PostgreSQL connection with exception handling
+              $conn = new PDO("pgsql:host={{ db_host }};dbname={{ db_name }}", "{{ db_user }}", "{{ db_password }}");
+              $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+              echo "Connected to PostgreSQL successfully<br>";
+
+              // Execute query with error handling
+              $stmt = $conn->query("SELECT id, email, first_name FROM users");
+              if ($stmt === false) {
+                  throw new RuntimeException("Query failed: " . implode(", ", $conn->errorInfo()));
+              }
+
+              // Process results
+              $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+              if (count($users) > 0) {
+                  foreach ($users as $row) {
+                      // Sanitize output to prevent XSS
+                      $id = htmlspecialchars($row["id"]);
+                      $name = htmlspecialchars($row["first_name"]);
+                      $email = htmlspecialchars($row["email"]);
+                      echo "$id: $name ($email)<br>";
+                  }
+              } else {
+                  echo "No users found<br>";
+              }
+
+          } catch (Throwable $e) {
+              // Centralized error handling
+              http_response_code(500);
+              echo "System error: " . htmlspecialchars($e->getMessage());
+              error_log("[DB ERROR] " . $e->getMessage()); // Log to server error log
+          } finally {
+              // Always close connection if established
+              if (isset($conn) && $conn instanceof PDO) {
+                  $conn = null; // PDO uses null to close connection
+              }
+          }
+          ?>
+        dest: /var/www/phpapp/dbtest.php
+        owner: www-data
+        group: www-data
+        mode: "0644"
+      notify: Reload nginx
+
+  handlers:
+    - name: Reload nginx
+      service:
+        name: nginx
+        state: reloaded
