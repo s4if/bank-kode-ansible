@@ -1,7 +1,7 @@
 - hosts: web
   become: yes
   vars:
-    nama: "Saiful Habib"
+    nama: "Saiful Habib, S.Pd."
     kelas: "XI TJKT 0"
   tasks:
     - name: Install nginx
@@ -18,20 +18,8 @@
         enabled: yes
 
     - name: Deploy HTML test page
-      copy:
-        content: |
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <title>Tes HTML Tahap 1</title>
-          </head>
-          <body>
-              <h1>Tes HTML Tahap 1</h1>
-              <p>Nama: {{ nama }}</p>
-              <p>Kelas: {{ kelas }}</p>
-              <p>Silahkan di Screenshot!</p>
-          </body>
-          </html>
+      template:
+        src: test.html.j2
         dest: /var/www/html/test.html
         owner: www-data
         group: www-data
