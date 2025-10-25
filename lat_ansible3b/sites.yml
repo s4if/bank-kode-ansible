@@ -24,3 +24,8 @@
         owner: www-data
         group: www-data
         mode: "0644"
+# Tugas XII TJKT 1:
+# Buat variable baru: cita_cita, motto, rencana_setelah_lulus
+# Buat HTML baru, profil.html
+# Masukkan ke dalam proyek ansible ini!
+# Up ke server menggunakan ansible!
